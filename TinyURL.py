@@ -2,6 +2,23 @@ import hashlib, base64
 import redis
 from tkinter import *
 from tkinter.font import Font
+import re
+from tabulate import tabulate
+
+EMAIL_REGEX = re.compile(r'([A-Za-z0-9]+[.-_])*[A-Za-z0-9]+@[A-Za-z0-9-]+(\.[A-Z|a-z]{2,})+')
+STATS_FILE = "stats.txt"
+
+def print_color(text,color):
+    if color=="green":
+        header = '\033[92m'
+    elif color=="red":
+        header = '\033[91m'
+    elif color=="yellow":
+        header = '\033[93m'
+    end = '\033[0m'
+
+    print(header + text + end)
+
 
 def center(win):
     """centers a tkinter window
@@ -24,15 +41,18 @@ def center(win):
 
 class TinyURL():
     def __init__(self,host='localhost',port=6379):
-        self.redis = self.make_server()
+        self.redis = self.make_server(host,port)
         if not self.redis:
-            print(f"ERROR: Redis server is not running [{host=},{port=}]")
+            print_color(f"Redis server is not running on [{host=},{port=}]","red")
         else:
-            self.run()
+            print_color(f"Connected to Redis server on [{host=},{port=}]","green")
+            # self.run()
+            self.email = "m@m.com"
+            self.dump_stats()
 
-    def make_server(self):
+    def make_server(self,host,port):
         try:
-            r = redis.Redis(host='localhost',port=6379)
+            r = redis.Redis(host,port)
             if r.ping():
                 return r
             else:
@@ -44,41 +64,62 @@ class TinyURL():
         return base64.urlsafe_b64encode(hashlib.md5(value.encode('utf-8')).digest()).decode('utf-8')[:-2]
 
     def short_to_long(self,short):
-        value = self.redis.get(short)
-        if value:
-            email, long = value.decode('utf-8').split()
-            if email == self.email:
-                return long
-
-        print('URL not found')
+        long = self.redis.hget(self.email,short)
+        if long:
+            cpt, url = long.decode('utf-8').split()
+            self.redis.hsetnx(self.email, short, f"{int(cpt)+1} {url}")
+            return url
         return None
 
     def long_to_short(self,long):
-        value = f'{self.email} {long}'
-        short = self.get_hash(value)
-        self.redis.set(short,value)
-        print(f"{long} => {short}")
+        short = self.get_hash(long)
+        self.redis.hsetnx(self.email, short, f"{1} {long}")
         return short
 
-    def set_text(self,text):
-        self.text.set(text)
+    def get_stats(self):
+        stats = self.redis.hgetall(self.email)
+        output = ""
+        output+= f"email: {self.email}\n"
+        output+= f"number of URLs: {len(stats)-1}\n"
+        list_tuples = []
+        for short, long in stats.items():
+            short = short.decode('utf-8')
+            if short not in ["__info__"]: 
+                cpt, url = long.decode('utf-8').split()
+                list_tuples.append((url,short,cpt))
+        
+        output+= tabulate(list_tuples, headers= ["Long URL","Short URL","Requests"],tablefmt='psql')
+        return output
+
+    def dump_stats(self):
+        stats = self.get_stats()
+        logs = open(STATS_FILE,"w+")
+        logs.write(stats)
+        logs.close()
+
+    def set_text(self,text,type="error"):
+        if type=="error":
+            self.text_error.set(text)
+        elif type=="user":
+            self.text_user.set(text)
 
     def is_email(self,email):
-        return email
+        return re.fullmatch(EMAIL_REGEX, email)
     
     def login(self):
         email = self.input_email.get()
-        if not self.is_email(email):
-            self.set_text("Enter a valid email")
+        if not email or not self.is_email(email.strip()):
+            self.set_text("Please enter a valid email")
         else:
-            if self.redis.get(email):
+            email = email.strip().lower()
+            if self.redis.hlen(email):
                 self.email = email
-                self.set_text("Connected")
+                self.set_text(f"Connected ({self.email})",type="user")
             else:
-                self.redis.set(email,0)
+                self.redis.hsetnx(email,"__info__","")
                 self.email = email
-                self.set_text("New user registered")
-
+                self.set_text(f"New user registered ({self.email})",type="user")
+            self.set_text("")
             self.input_email.destroy()
             self.button_login.destroy()
             self.label_email.destroy()
@@ -88,13 +129,64 @@ class TinyURL():
 
             self.add_url_section()
 
+    def convert_to_short(self):
+        long = self.input_long.get()
+        if long:
+            short = self.long_to_short(long.strip())
+            self.input_short.delete(0,END)
+            self.input_short.insert(0,short)
+            self.set_text("") 
+
+    def convert_to_long(self):
+        short = self.input_short.get()
+        if short:
+            long = self.short_to_long(short.strip())
+            self.input_long.delete(0,END)
+            if long:
+                self.input_long.insert(0,long)
+                self.set_text("") 
+            else:
+                self.set_text("URL not found")   
+
     def add_url_section(self):
+
+        self.label_long = Label(text="Long : ")
+        self.label_long.pack(padx=(0,0), pady=(50,0), fill='both')
+
+        self.input_long = Entry(self.app)
+        self.input_long.pack(padx=(0,0), pady=(50,0), fill='both')
+
+        self.button_short = Button(self.app, text ="⬇️", command = self.convert_to_short)
+        self.button_short.pack()
+
+        self.button_long = Button(self.app, text ="⬆️", command = self.convert_to_long)
+        self.button_long.pack()   
+
+        self.label_short = Label(text="Short : ")
+        self.label_short.pack(padx=(0,0), pady=(50,0), fill='both')
+
+        self.input_short = Entry(self.app)
+        self.input_short.pack(padx=(0,0), pady=(50,0), fill='both')
+
+        self.button_stats = Button(self.app, text ="Dump stats", command = self.dump_stats)
+        self.button_stats.pack()
+
+
         return
 
     def logout(self):
         self.email = None
-        self.set_text("Signed out")
+        self.set_text("",type="user")
+
         self.button_logout.destroy()
+        self.label_long.destroy()
+        self.input_long.destroy()
+        self.button_short.destroy()
+        self.button_long.destroy()
+        self.label_short.destroy()
+        self.input_short.destroy()
+        self.button_stats.destroy()
+
         self.add_email_section()
 
     def add_email_section(self):
@@ -114,10 +206,12 @@ class TinyURL():
         self.app.title("TinyURL")
         center(self.app)
 
-        # create elements for first configuration (screen mode)
-        self.text = StringVar()
-        label = Label(self.app, textvariable=self.text)
-        label.pack()
+        self.text_user = StringVar()
+        label_user = Label(self.app, textvariable=self.text_user)
+        label_user.pack()
+        self.text_error = StringVar()
+        label_error = Label(self.app, textvariable=self.text_error)
+        label_error.pack()
 
         self.add_email_section()
         
