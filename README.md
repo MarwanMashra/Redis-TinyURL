@@ -1,4 +1,4 @@
-# Reddis-TinyURL
+# Redis-TinyURL
 
 ## Installation
 
