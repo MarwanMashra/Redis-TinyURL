@@ -26,7 +26,7 @@ By default, the host is <b>localhost</b> and the port is <b>6379</b>. Both argum
 
 ## Demo
 
-<img src="demo.gif" alt="Demo gif" height=400>
+<img src="demo.gif" alt="assets/Demo gif" height=400>
 
 ## Links
 
